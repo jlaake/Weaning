@@ -283,7 +283,7 @@ alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
 alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
 
 delta.1=list(formula=~t1+area)
-delta.2=list(formula=~time+area) 
+delta.2=list(formula=~timebin+area) 
 
 S.1=list(formula=~ageclass)
 S.2=list(formula=~ageclass+sex)
@@ -314,7 +314,7 @@ alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
 alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
 
 delta.1=list(formula=~t1+area)
-delta.2=list(formula=~time+area) 
+delta.2=list(formula=~timebin+area) 
 
 S.1=list(formula=~ageclass)
 S.2=list(formula=~ageclass+sex)
@@ -345,7 +345,7 @@ alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
 alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
 
 delta.1=list(formula=~t1+area)
-delta.2=list(formula=~time+area) 
+delta.2=list(formula=~timebin+area) 
 
 S.1=list(formula=~ageclass)
 S.2=list(formula=~ageclass+sex)
