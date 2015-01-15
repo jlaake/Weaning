@@ -1,0 +1,617 @@
+---
+title: "Zc Weaning Analysis"
+output: word_document
+date: "January 12, 2015"
+---
+
+```{r,echo=FALSE,results='hide'}
+suppressPackageStartupMessages(library(marked))
+```
+
+```{r,eval=FALSE,echo=FALSE}
+############################################################################################
+# This code is not run but is stored here to document how the data were extracted and
+# handled to create the capture history and covariate data
+############################################################################################
+extract.Zc_byarea=function(file="Weaning&SurvivalStudy.accdb",dir="")
+{
+  xx=require(RODBC,quietly=TRUE)
+	connection=odbcConnectAccess2007(file)
+#   Fetch initial and resight data tables
+	Initial=sqlFetch(connection,"Initial")
+	Resights=sqlFetch(connection,"Resights")
+#   Exclude first column which is not needed and exclude resights between 10/8/12 and 5/15/2013
+	Resights=subset(Resights,subset=as.Date(Sitedate)<=as.Date("2012-10-08") | as.Date(Sitedate)>= as.Date("2013-05-15"), select=names(Resights)[-1])
+#   Merge brands and their resights
+	merged=merge(Initial,Resights,by.x="ID",by.y="AnimalID",all.x=TRUE)
+#   pool all dates and then create occasion partitions
+	all.dates=unique(names(table(merged$Sitedate)))
+#   occasion dates are the first and last date of a trip or split trip in March and April to get 2 occasions
+	occasion.dates=as.Date(c("10-24-2010","10-29-2010","11-29-2010","12-06-2010","1-17-2011",
+					"1-25-2011","2-21-2011","3-1-2011","3-14-2011","3-19-2011","3-23-2011","4-15-2011","4-19-2011","4-24-2011",
+					"5-23-2011","6-13-2011","6-20-2011","6-25-2011",
+					"7-10-2011","8-19-2011","5-1-2012","6-30-2012",
+					"7-1-2012","8-10-2012","9-17-2012","10-8-2012","5-15-2013","6-30-2013","08-15-2013"),"%m-%d-%Y")
+#   create an occasion field by cutting site dates with occasion dates	
+	merged$occasion=cut(as.Date(merged$Sitedate),occasion.dates,include.lowest=TRUE)
+#   drop any unused factor levels
+	merged=droplevels(merged)
+# order merged data frame to remove duplicates
+  merged=merged[order(merged$ID,merged$Sitedate),]
+# create suckle field so as to keep area with suckling
+  merged$suckle=ifelse(merged$behavior%in%c("S","M"),1,0)
+# remove any duplicates with same id,occasion and suckle value; this uses first sighting
+  merged=merged[!duplicated(subset(merged,select=c("ID","occasion","suckle"))),]
+# add area 1-4
+	merged$areas=ifelse(merged$code%in%c("ACV","EACS","EAC","LNC","LTC","OCV","ONC"),1,ifelse(merged$code%in%c("GFB","ECK","CWD","CWP","CRW"),3,ifelse(merged$code=="ANI",4,2)))
+# define duplicates for id and occasion
+  dups=duplicated(subset(merged,select=c("ID","occasion")),fromLast=TRUE) |
+   duplicated(subset(merged,select=c("ID","occasion")))
+# keep either non-dups or the duplicate record with suckling
+  merged=merged[!dups | (dups & merged$suckle==1),]
+# create a 3-way table of frequencies (counts) of resights by ID (sea lion), occasion and area
+	tt=table(merged$ID,merged$occasion,merged$areas)
+#   create a capture history matrix with ID as rows and occasions as columns and the value is the area
+	chmat=apply(tt,c(1,2),function(x) {
+				z=x*1:4
+				if(any(z>0))
+					return(min(z[z>0]))
+				else
+					return(0)
+			})
+#  the row names of chmat are the ids			
+	bID=row.names(chmat)
+#   for each row in chmat, paste the elements together to create a capture history
+	ch=apply(chmat,1,paste,collapse="")
+#   extract needed fields from Initial data frame and store in initial data frame
+	initial=subset(Initial,select=names(Initial)[c(2,7,9:13,20:26)])
+#   create a dataframe with ID and ch - capture history
+	data=data.frame(ID=bID,ch=ch)
+#   merge data with initial to grab those fields
+	data=merge(data,initial,by.x="ID",by.y="ID")
+#   turn ch into a character if it isn't already a character
+	data$ch=as.character(data$ch)
+#   add on occasions for initial release in July for Paternity pups and in Sept for brand/tag pups
+	initial.ch=rep("01",nrow(chmat))
+	initial.ch[data$Treatment=="Paternity"]="10"
+	data$ch=paste(initial.ch,data$ch,sep="")
+#   create fecal time
+	data$FecalTime=as.POSIXct( strptime(paste(as.character(data$Date),
+							paste(formatC(as.POSIXlt(data$FecalTime)$hour,width=2,flag=0),formatC(as.POSIXlt(data$FecalTime)$min,width=2,flag=0),sep=":")),"%Y-%m-%d %H:%M"))
+#   create 0/1 variables: Brand =1 if branded and 0 if not; Tag = 1 if tagged and 0 if not
+	Brand=rep(0,nrow(data))
+	Brand[substr(data$Treatment,1,5)=="Brand"]=1
+	Tag=1-Brand
+#   turn Brand into a factor variable brand and Tag into a factor variable tag
+	data$brand=factor(Brand)
+	data$tag=factor(Tag)
+#   create an experiment variable: 1 if in Survival/Weaning study and 0 otherwise 
+	data$experiment=0
+	data$experiment[data$Study=="SW"]=1
+	data$experiment=factor(data$experiment)
+#   turn Brander character into factor variable brander and remove Brander (set to NULL)
+	data$brander=factor(data$Brander)
+	data$Brander=NULL
+#   change name of Sex to sex	
+	names(data)[names(data)=="Sex"]="sex"
+#   create condition index weight/length
+	data$CI=data$Weight/data$Length
+#   Do Suckle capture history as well going through the same steps as above
+#   extract resights of "S" or "M" behavior
+	suckle=subset(Resights,subset=behavior%in%c("S","M"))
+	merged=merge(Initial,suckle,by.x="ID",by.y="AnimalID",all.x=TRUE)
+#   pool all dates and then create occasion partitions
+	merged$occasion=cut(as.Date(merged$Sitedate),occasion.dates)
+	merged=droplevels(merged)
+# order merged data frame to remove duplicates
+  merged=merged[order(merged$ID,merged$Sitedate),]
+# remove any duplicates with same id occasion; this uses first sighting
+  merged=merged[!duplicated(subset(merged,select=c("ID","occasion"))),]
+# add area 1-4
+  merged$areas=ifelse(merged$code%in%c("ACV","EACS","EAC","LNC","LTC","OCV","ONC"),1,ifelse(merged$code%in%c("GFB","ECK","CWD","CWP","CRW"),3,ifelse(merged$code=="ANI",4,2)))
+# create table by id,occasion and area
+  tt=table(merged$ID,merged$occasion,merged$areas)
+# if seen in more than one area during an occasion it uses area number; only areas 1 and 2 are present because
+# that is the only place where suckling was observed; there are no dups here
+	suckle_chmat=apply(tt,c(1,2),function(x) {
+				z=x*(1:2)
+				if(any(z>0))
+            return(z[z>0])
+				else
+					return(0)
+			})
+#   Because suckle_chmat only includes suckling observations and there were no suckling (S or M) observations, the
+#   number of columns in suckle_chmat is less than chmat, so the following pads with columns containing 0 at the end
+	suckle_chmat=cbind(suckle_chmat,matrix(0,ncol=ncol(chmat)-ncol(suckle_chmat),nrow=nrow(suckle_chmat)))
+#   Now create the area-S or area-U structure needed for the state uncertainty model with areas specified
+    area_chmat=matrix(0,nrow=nrow(chmat),ncol=ncol(chmat))
+#   loop over rows (i) and columns (j)
+	for(i in 1:nrow(chmat))
+	for(j in 1:ncol(chmat))
+	{
+#       if for some reason suckle_chmat has a non-zero value and chmat and suckle_chmat disagree
+#       set it to suckle value. This over-rides so as to maintain the observed suckling.  In the data
+#       this will only occur when a pup was seen in areas 1 and 2 on the same occasion and it was seen
+#       suckling in area 2. 
+		if(suckle_chmat[i,j]>0&chmat[i,j]!=suckle_chmat[i,j])chmat[i,j]=suckle_chmat[i,j]
+#       if it was seen suckling then it pastes the area with "S"
+		if(chmat[i,j]>0)
+#           if it was seen suckling then it pastes the area with "S"
+			if(suckle_chmat[i,j]>0)
+				area_chmat[i,j]=paste(chmat[i,j],"S",sep="")
+		    else
+#               otherwise if it was seen but not seen suckling then it gets U
+				area_chmat[i,j]=paste(chmat[i,j],"U",sep="")
+	}		
+#   now paste the area_chmat values by row	
+	ch=apply(area_chmat,1,paste,collapse=",")
+#   assign 1S for the first occasion when it was released at time of branding
+	ch=paste("1S",ch,sep=",")
+#   assign ch to suckle.ch
+	data$suckle.ch=ch	
+#   get rid of any records that are all 0 - should not be any
+	data=data[as.numeric(data$ch)>0,]
+#   assign times (dates) which are used to create time.intervals between occasions.  The approximate mid-point dates are used because sampling occurs
+#   over several days in each occasion.
+	times= as.Date(c("2010-7-31","2010-09-26","2010-10-26","2010-12-02","2011-01-21","2011-02-25","2011-03-16","2011-03-20","2011-04-17","2011-04-20",
+					"2011-06-03","2011-06-16","2011-06-22","2011-07-01","2011-07-19","2012-06-10","2012-07-20","2012-09-27","2013-06-07","2013-07-22"))
+#   check to make sure the number of times and the number of occasions agree; this ignores the July-Sept period.
+	if((length(times)-2)!=ncol(chmat))stop("times need to be adjusted")
+#   close the connection to the access database
+	odbcClose(connection)
+#   return a list with the dataframe named data and the vector of times.
+	return(list(data=data,times=times))
+}
+# This creates the data used for the analysis.  Those data are in Weaningdata.xlsx
+zc=extract.Zc_byarea()
+zc$data$initial.age=0.238356
+# Extract branded sea lions which excludes tagged only
+zc$data=zc$data[zc$data$brand==1,]
+zc$data$CI=zc$data$Weight/(zc$data$Length/100)
+# Compute sex-specific mean weights
+mean.wts=tapply(zc$data$Weight,zc$data$sex,mean)
+zc$data$Weight[zc$data$sex=="F"]=zc$data$Weight[zc$data$sex=="F"]-mean.wts[1]
+zc$data$Weight[zc$data$sex=="M"]=zc$data$Weight[zc$data$sex=="M"]-mean.wts[2]
+# create a weight factor variable which are skinny (< -2), normal (-2 to +2), fat (>2)
+zc$data$Wt=cut(zc$data$Weight,c(-15,-1.5,1.5,15))
+# Use suckle.ch for this analysis
+zc$data$ch=zc$data$suckle.ch
+zc$data$brandnum=zc$data$ID
+zcdata=subset(zc$data,subset=brand==1,select=c("ch","sex","Weight","Length","Wt","initial.age","brandnum"))
+times=diff(zc$times)[-1]/365
+# modify ch such that observations at age 2 or older are considered weaned
+chmat=do.call("rbind",strsplit(zcdata$ch,","))
+chmat[,15:19]=sub("U","W",chmat[,15:19])
+zcdata$ch=apply(chmat,1,paste,collapse=",")
+# save data to put in excel spreadsheet
+chmat=do.call("rbind",strsplit(zcdata$ch,","))
+write.table(cbind(subset(zcdata,select=c("brandnum","sex","Weight","Wt")),chmat),file="Weaningdata.txt")
+````
+
+
+```{r,eval=FALSE,echo=FALSE}
+############################################################################################
+# This code is also not run but is stored here to show how the design data for the model
+# were created and what parameters were fixed.
+############################################################################################
+# with marked packge process data with Multistate model with state uncertainty and independent area-state structure
+zcp=process.data(zcdata,model="HMMu2iMSCJS",strata.labels=list(area=c(1,2,3,4),states=c("S","W")),time.intervals=as.vector(times),begin.time=.238356)
+# make design data
+zcddl=make.design.data(zcp)
+
+# Modify design data
+# S ddl
+zcddl$S$fix=NA
+# fix survival to 1 for closed periods
+zcddl$S$fix[zcddl$S$occ%in%c(6,8)]=1
+# create variables used in models
+zcddl$S$ageclass=cut(zcddl$S$occ,breaks=c(0,13,15,19),include.lowest=T,labels=c("Pup","Yearling","2yr"))
+zcddl$S$session=cut(zcddl$S$occ,breaks=c(0,3,13,15,19),labels=c("EarlypupHW","LatePup","Yearling","2yr"))
+zcddl$S$nonpup=ifelse(zcddl$S$ageclass!="Pup",1,0)
+zcddl$S$yearling=ifelse(zcddl$S$ageclass!="Yearling",1,0)
+zcddl$S$pup=1-zcddl$S$nonpup
+zcddl$S$W=ifelse(zcddl$S$state=="W",1,0)
+zcddl$S$ANI=ifelse(zcddl$S$area=="4",1,0)
+
+#Psi ddl
+# transition from weaned to suckling is not possible
+zcddl$Psi$fix[zcddl$Psi$state=="W"&zcddl$Psi$tostate=="S"]=0
+# transition from suckling to weaned is prevented duing closed periods
+zcddl$Psi$fix[zcddl$Psi$state=="S"&zcddl$Psi$tostate=="W"&zcddl$Psi$occ%in%c(6,8)]=0
+# starting at occasion 14 - age 1 to 2; all are weaned
+zcddl$Psi$fix[zcddl$Psi$state=="S"&zcddl$Psi$tostate=="W"&zcddl$Psi$occ==14]=1
+zcddl$Psi$fix[zcddl$Psi$state=="S"&zcddl$Psi$tostate=="S"&zcddl$Psi$occ==14]=0
+zcddl$Psi$fix[zcddl$Psi$state=="S"&zcddl$Psi$tostate=="W"&zcddl$Psi$occ%in%15:18]=0
+# add time bins and weight and male variables for Psi
+zcddl$Psi$tbin=cut(zcddl$Psi$occ,c(0,2,4,5:9,14,18),right=TRUE)
+zcddl$Psi$early=ifelse(zcddl$Psi$occ%in%1:4,1,0)
+zcddl$Psi$heavy=ifelse(as.numeric(zcddl$Psi$Wt)==3,1,0)
+zcddl$Psi$male=ifelse(zcddl$Psi$sex=="M",1,0)
+
+#alpha ddl
+# do not allow movement to ANI prior to occasion 6
+zcddl$alpha$fix[zcddl$alpha$area!="4"&zcddl$alpha$toarea=="4"&zcddl$alpha$occ%in%1:5]=0
+# do not allow movement to area 3 prior to occasion 4
+zcddl$alpha$fix[zcddl$alpha$area!="3"&zcddl$alpha$toarea=="3"&zcddl$alpha$occ%in%1:3]=0
+# create variables for models of movement
+zcddl$alpha$tbin=cut(zcddl$alpha$occ,c(0,2,4,20))
+zcddl$alpha$nonpup=ifelse(zcddl$alpha$occ>=13,1,0)
+zcddl$alpha$to4=ifelse(zcddl$alpha$toarea=="4",1,0)
+zcddl$alpha$male=ifelse(zcddl$alpha$sex=="M",1,0)
+
+#delta ddl
+# no errors in state for occasions 15-19 because all are considered weaned
+zcddl$delta$fix[zcddl$delta$occ%in%15:19]=0.9999999999
+# probability of saying it is weaned for occasions 1-14 is 0
+zcddl$delta$fix[zcddl$delta$state=="W"&zcddl$delta$occ%in%1:14]=0
+# create variable for second occasion when forgot to record suckle behavior
+zcddl$delta$t1=ifelse(zcddl$delta$occ==2,1,0)
+# create time bins for delta; 15-20 not used but included so it doesn't have an NA value
+zcddl$delta$timebin=cut(zcddl$delta$occ,c(2,3,10,20),right=FALSE)
+
+
+# p ddl - create variables for models
+zcddl$p$W=ifelse(zcddl$p$state=="W",1,0)
+zcddl$p$session=cut(zcddl$p$occ,breaks=c(1,2,3,4,5,7,9,14,17,19))
+zcddl$p$SMI=ifelse(!zcddl$p$area==4,1,0)
+zcddl$p$pup=ifelse(zcddl$p$occ<=12,1,0)
+# set p=0 for ANI and East End for occasions with no sampling effort
+zcddl$p$fix=NA
+zcddl$p$fix[zcddl$p$area==4&zcddl$p$occ%in%c(2:9,17)]=0
+zcddl$p$fix[zcddl$p$area==3 & zcddl$p$occ%in%c(2:4,9,13,17)]=0
+```
+
+
+```{r,eval=FALSE,echo=FALSE}
+#####################################################################################
+# This code is also not run here because it takes a long time to fit all of the models.
+# It is included here to document the models that were fitted. Models were run in 
+# 3 batches: one for each of the 3 models created for resight probability
+do_wean=function()
+{
+p.1=list(formula=~W+area)  	
+
+Psi.1=list(formula=~Time)				 
+Psi.2=list(formula=~Time+Wt)				 
+Psi.3=list(formula=~tbin)
+Psi.4=list(formula=~tbin+Wt)
+Psi.5=list(formula=~tbin+early:heavy)
+Psi.6=list(formula=~tbin+early:male)
+
+alpha.1=list(formula=~-1+male:to4+area:toarea)
+alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
+alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
+
+delta.1=list(formula=~t1+area)
+delta.2=list(formula=~time+area) 
+
+S.1=list(formula=~ageclass)
+S.2=list(formula=~ageclass+sex)
+S.3=list(formula=~pup:Wt)
+S.4=list(formula=~pup:Wt+ANI)
+S.5=list(formula=~pup:Wt+yearling:Wt)
+S.6=list(formula=~-1 + pup:Wt+nonpup:sex)
+
+cml=create.model.list(c("S","Psi","alpha","delta","p"))
+return(crm.wrapper(cml,data=zcp,ddl=zcddl,external=FALSE,hessian=FALSE,method="nlminb",save.matrices=FALSE)))
+}
+
+p1.wean.models=do.wean()
+
+do_wean=function()
+{
+p.2=list(formula=~W+time+area)		
+
+Psi.1=list(formula=~Time)				 
+Psi.2=list(formula=~Time+Wt)				 
+Psi.3=list(formula=~tbin)
+Psi.4=list(formula=~tbin+Wt)
+Psi.5=list(formula=~tbin+early:heavy)
+Psi.6=list(formula=~tbin+early:male)
+
+alpha.1=list(formula=~-1+male:to4+area:toarea)
+alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
+alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
+
+delta.1=list(formula=~t1+area)
+delta.2=list(formula=~time+area) 
+
+S.1=list(formula=~ageclass)
+S.2=list(formula=~ageclass+sex)
+S.3=list(formula=~pup:Wt)
+S.4=list(formula=~pup:Wt+ANI)
+S.5=list(formula=~pup:Wt+yearling:Wt)
+S.6=list(formula=~-1 + pup:Wt+nonpup:sex)
+
+cml=create.model.list(c("S","Psi","alpha","delta","p"))
+return(crm.wrapper(cml,data=zcp,ddl=zcddl,external=FALSE,hessian=FALSE,method="nlminb",save.matrices=FALSE)))
+}
+p2.wean.models=do.wean()
+
+
+do_wean=function()
+{	
+p.3=list(formula=~-1+W+time:area)		
+
+Psi.1=list(formula=~Time)				 
+Psi.2=list(formula=~Time+Wt)				 
+Psi.3=list(formula=~tbin)
+Psi.4=list(formula=~tbin+Wt)
+Psi.5=list(formula=~tbin+early:heavy)
+Psi.6=list(formula=~tbin+early:male)
+
+alpha.1=list(formula=~-1+male:to4+area:toarea)
+alpha.2=list(formula=~-1+area:toarea+nonpup:area:toarea)
+alpha.3=list(formula=~-1+area:toarea+nonpup:area:toarea+male:to4)
+
+delta.1=list(formula=~t1+area)
+delta.2=list(formula=~time+area) 
+
+S.1=list(formula=~ageclass)
+S.2=list(formula=~ageclass+sex)
+S.3=list(formula=~pup:Wt)
+S.4=list(formula=~pup:Wt+ANI)
+S.5=list(formula=~pup:Wt+yearling:Wt)
+S.6=list(formula=~-1 + pup:Wt+nonpup:sex)
+
+cml=create.model.list(c("S","Psi","alpha","delta","p"))
+return(crm.wrapper(cml,data=zcp,ddl=zcddl,external=FALSE,hessian=FALSE,method="nlminb",save.matrices=FALSE))
+}
+
+p3.wean.models=do.wean()
+
+````
+
+#Introduction
+ Jeff H to add
+ 
+#Methods
+
+##Field Methods
+
+Jeff H to add
+
+##Statistical Analysis
+
+###Data 
+
+Database used:  Weaning&SurvivalStudy.accdb;  tables initial and resight; only branded animals were used v1-v244
+Excluded minimal number of resights between 10/8/12 and 5/15/2013
+Sightings occurred on multiple days; they were pooled into sighting occasions which were either a trip or half-trip from Fall 2010 to Spring 2011 (9 occasions) and they were defined based on breaks in effort during summer 2011 (5 occasions from 24 May - 17 Aug) and based on timing of field study activities in 2012 (3 occasions), and summer 2013 (2 occasions). This created 19 sampling occasions including the first release occasion. 
+  
+Occasion | Midpoint | Begin | End  | Comment
+--------: | --------: | -----: | ----: | :-------
+1 |9/26/2010	| | | Release date
+2	| 10/26/2010 |	10/24/2010 |	10/29/2010 | First trip
+3	| 12/2/2010	  | 11/30/2010	  | 12/5/2010  | Second trip
+4	| 1/21/2011	  | 1/18/2011	  | 1/24/2011  | Third trip
+5	| 2/25/2011	  | 2/22/2011	  | 2/28/2011  | Fourth trip
+6	| 3/16/2011	  | 3/15/2011	  | 3/18/2011  | Fifth trip - first half
+7	| 3/20/2011	  | 3/19/2011	  | 3/22/2011  | Fifth trip - second half
+8	| 4/17/2011	  | 4/16/2011	  | 4/18/2011  | Sixth trip - first half
+9	| 4/20/2011	  | 4/19/2011	  | 4/21/2011  | Sixth trip - second half
+10 | 6/3/2011	  | 5/24/2011	  | 6/12/2011  | Summer 2011 - occasion 1
+11 | 6/16/2011	  | 6/13/2011	  | 6/19/2011  | Summer 2011 - occasion 2
+12 | 6/22/2011	  | 6/20/2011	  | 6/24/2011  | Summer 2011 - occasion 3
+13 | 7/1/2011	  | 6/25/2011	  | 7/9/2011  | Summer 2011 - occasion 4
+14 | 7/29/2011	  | 7/10/2011	  | 8/17/2011  | Summer 2011 - occasion 5
+15 | 6/10/2012	  | 5/1/2012	  | 6/30/2012  | Summer 2012 - occasion 1
+16 | 7/20/2012	  | 7/1/2012	  | 8/9/2012  | Summer 2012 - occasion 2
+17 | 9/27/2012	  | 9/18/2012	  | 10/7/2012  | Summer 2012 - occasion 3
+18 | 6/7/2013	    | 5/15/2013	  | 6/30/2013  | Summer 2013 - occasion 1
+19 | 7/23/2013    | 7/1/2013	  | 8/15/2013  | Summer 2013 - occasion 2
+
+Area 1 "ACV","EACS","EAC","LNC","LTC","OCV","ONC"
+Area 2 rest of SMI other than areas 1 and 3,
+Area 3 "GFB","ECK","CWD","CWP","CRW"
+Area 4 ANI
+
+State Observations: S - if seen suckling; U - if seen but not seen suckling; W seen and 2 years or older when it was assumed to be weaned.
+
+The possible set of observations are the combinations of area and state observation: 1S,1U,1W,2S,2U,2W,3S,3U,3W,4S,4U,4W; No pups were seen suckling in areas 3 and 4. 
+
+If a pup was seen in multiple areas during the same occasion the first sighting was used unless a later sighting was of suckling behavior. In that case, the area for the suckling observation was used.  Because no suckling behavior was observed in areas 3 and 4, this would favor areas 1 and 2 when they were seen in both areas during an occasion.
+
+Weight covariate was the residual from the sex-specific mean which was used to create a weight factor variable which are below average (< -1.5), normal (-1.5 to +1,5), above average (>1.5). 
+
+###Models
+The key issue with the analysis of the weaning data is the uncertainty of the weaning state.  If the pup is seen suckling or in close proximity to its mother, then we know that is not weaned.  However, during the pups first year of life we cannot be sure that it is weaned when it is seen separately from its mother because she could be away or a foraging trip or the pup simply may not be suckling or near its mother at the time it was seen. Multi-state models with state uncertainty were proposed by Pradel et al. (xxxx) and extended by Kendall et al (xxxx) to include the robust design in which the state cannot change during secondary sampling occasions. The latter was incorporated into program MARK as model RDMSMisClass. For the weaning data, all of the pups were released in the suckling state (not weaned), so the parameter $\pi$ which models the initial proportion in each state is unnecessary. By conditioning on the initial known release state, the $\pi$ are not needed.
+
+The weaning data were modelled with a hidden Markov multi-state model with 2 levels of state stratification: weaning state and location (area). Only the former is subject to uncertainty because the latter is known for any observation. Transition between weaning states and movement between areas were assumed to be independent. This is model HMMU2IMSCJS in the R package marked (Laake et al. 2013). 
+
+Movement to area 4 (ANI) was set to 0 for the first 5 time intervals and likewise for area 3 for the first 3 time intervals because pups were too young to travel those distances. During the half-trips in March and April we assumend the population was closed in that all pups survived and did  not wean but they were allowed to move between areas.All pups were transitioned to weaned after occasion 14 if they were not already weaned such that they would be weaned by their second birthday.
+
+
+
+Table. Weaning state transition matrix for the two (weaned states - S and W). The weaned state is an absorbing state (once weaned cannot return to suckling state).
+
+|  | S| W  
+:--: | :--: | :--: 
+S|  $(1-\psi_{SW})$ | $\psi_{SW}$ 
+W |   0  | 1
+
+
+Table. Movement transition matrix for the four areas (1-4). By definition, $\sum_j \alpha_{ij}=1$.
+
+|  | 1| 2 | 3 | 4
+:--: | :--: | :--: | :--: | :--: 
+1 | $\alpha_{{11}}$  | $\alpha_{{12}}$  |$\alpha_{{13}}$  |$\alpha_{{14}}$  
+2 | $\alpha_{{21}}$  | $\alpha_{{22}}$  |$\alpha_{{23}}$  |$\alpha_{{24}}$  
+3 | $\alpha_{{31}}$  | $\alpha_{{32}}$  |$\alpha_{{33}}$  |$\alpha_{{34}}$  
+4 | $\alpha_{{41}}$  | $\alpha_{{42}}$  |$\alpha_{{43}}$  |$\alpha_{{44}}$  
+
+
+Table. Full independence transition matrix for the possible 9 states with four areas (1-4), two (weaned states - S and W), and death.
+
+
+|  | 1S| 1W | 2S | 2W  | 3S | 3W | 4S | 4W | Dead
+:--: | :--: | :--: | :--: | :--: | :--: | :--: | :--: | :--: | :--:
+1S | $\alpha_{{11}} (1-\psi_{SW}) \phi $ | $\alpha_{11} \psi_{SW} \phi$ | $\alpha_{{12}} (1-\psi_{SW}) \phi$ | $\alpha_{12} \psi_{SW} \phi$ | $\alpha_{13} (1-\psi_{SW}) \phi$ | $\alpha_{13} \psi_{SW} \phi$ | $\alpha_{14} (1-\psi_{SW}) \phi$ | $\alpha_{14} \psi_{SW} \phi$ | $1-\phi$
+1W | 0 | $\alpha_{11} \phi$ | 0 | $\alpha_{12} \phi$ | 0| $\alpha_{13} \phi$ | 0| $\alpha_{14} \phi$ | $1-\phi$
+2S | $\alpha_{21} (1-\psi_{SW}) \phi$ | $\alpha_{21} \psi_{SW} \phi$ | $\alpha_{22} (1-\psi_{SW}) \phi$ | $\alpha_{22} \psi_{SW} \phi$ | $\alpha_{23} (1-\psi_{SW}) \phi$ |  $\alpha_{23} \psi_{SW} \phi$ |  $\alpha_{24} (1-\psi_{SW}) \phi$ |  $\alpha_{24} \psi_{SW} \phi$ | $1-\phi$
+2W |0 | $\alpha_{21} \phi$ | 0 | $\alpha_{22} \phi$ | 0 |  $\alpha_{23} \phi$ |  0|  $\alpha_{24} \phi$ | $1-\phi$
+3S | $\alpha_{31} (1-\psi_{SW}) \phi$ | $\alpha_{31} \psi_{SW} \phi $ | $\alpha_{32} (1-\psi_{SW}) \phi$ | $\alpha_{32} \psi_{SW} \phi $  | $\alpha_{33} (1-\psi_{SW}) \phi$ | $\alpha_{33} \psi_{SW} \phi $ | $\alpha_{34} (1-\psi_{SW}) \phi$ | $\alpha_{34} \psi_{SW} \phi $ | $1-\phi$
+3W | 0 | $\alpha_{31} \phi$ | 0 | $\alpha_{32} \phi$  | 0 | $\alpha_{33} \phi$ | 0 | $\alpha_{34} \phi$ | $1-\phi$
+4S |$\alpha_{41} (1-\psi_{SW}) \phi$ | $\alpha_{41} \psi_{SW} \phi $ | $\alpha_{42} (1-\psi_{SW}) \phi$ | $\alpha_{42} \psi_{SW} \phi $  | $\alpha_{43}  (1-\psi_{SW}) \phi$ | $\alpha_{43} \psi_{SW} \phi $ | $\alpha_{44} (1-\psi_{SW}) \phi$ | $\alpha_{44} \psi_{SW} \phi $ | $1-\phi$
+4W | 0 | $\alpha_{41} \phi$ | 0 | $\alpha_{42} \phi$  | 0 | $\alpha_{43} \phi$ | 0 | $\alpha_{44} \phi$ | $1-\phi$
+Dead | 0 | 0 |  0 |  0 |  0 | 0 | 0 | 0 | 1
+
+
+Models: ~ means formula; -1 removes the intercept which is not needed.  If intercept remained the model 
+would have too many parameters.
+
+Sighting probability: 3 models time, area, time:area interaction, weaning status (W=1 weaned); weaned pups less likely to be seen 
+
+1. ~W+area - differs by area and weaned status
+2. ~W+time+area - differs by area and weaned status and time
+3. ~W+time:area-1 - differs by wean status and variation across time is area dependent
+
+State Transition probability from suckling to weaning: 6 models
+
+1. ~Time - time trend	 
+2. ~Time+Wt - time trend + weight difference
+3. ~tbin - time step function + weight difference
+4. ~tbin+Wt - time step function
+5. ~tbin+early:heavy - time step function + above average pups more likely to wean in time steps 1 to 4
+6. ~tbin+early:male - time step function + male pups more likely to wean in time steps 1 to 4
+
+Movement Transition probability: 3 models
+
+1. ~male:to4+area:toarea-1 - males more likely to move to area4 + full area:toarea transitions
+2. ~area:toarea+nonpup:area:toarea-1 - full area:toarea transitions which differ for pups and non-pups
+3. ~area:toarea+nonpup:area:toarea+male:to4-1 - males more likely to move to area4 and full area:toarea transitions which differ for pups and non-pups
+
+State Identification probability: 2 models
+
+1. ~t1+area - suckling detection varies by area and is lower in Oct
+2. ~time+area - suckling detection varies by area and differs for each time
+
+Survival probability: 6 models
+
+1. ~ageclass - separate pup, yearling, 2 yr old survival
+2. ~ageclass+sex - separate pup, yearling, 2 yr old survival plus sex difference
+3. ~pup:Wt - pup survival varies by weight class, separate 1-2 yr old survival
+4. ~pup:Wt+ANI - pup survival varies by weight class, separate 1-2 yr old survival, different survival at ANI
+5. ~pup:Wt+yearling:Wt - pup and yearling survival varies by weight class, separate 2 yr old survival
+6. ~-pup:Wt+nonpup:sex-1 - pup survival varies by weight class, separate 1-2 yr old survival that varies by sex
+
+#Results
+
+##Data Summary
+```{r,echo=FALSE}
+chmat=do.call(rbind,strsplit(zcdata$ch,","))
+seen_as_yearlings=sum(apply(chmat[,13:19],1,function(x) any(x!="0")))
+seen_suckling=sum(apply(chmat[,2:19],1,function(x) any(substr(x,2,2)=="S")))
+never_seen=length(zcdata$ch[zcdata$ch==paste("1S",paste(rep("0",18),collapse=","),sep=",")])
+pup_survival=sapply(tapply(1:nrow(chmat),list(zcdata$sex,zcdata$Wt),function(x) x),function(x) sum(apply(chmat[x,13:19],1,function(x) any(x!="0"))))
+num_pups=tapply(1:nrow(chmat),list(zcdata$sex,zcdata$Wt),length)
+survbysex=cbind(pup_survival,as.vector(num_pups)-pup_survival)
+df=data.frame(sex=rep(c("F","M"),3),Wt=rep(c("Below","Normal","Above"),each=2))
+
+bywt=glm(survbysex~Wt,family="binomial",data=df)
+bysex=glm(survbysex~sex,family="binomial",data=df)
+null_model=glm(survbysex~1,family="binomial",data=df)
+chiwt=anova(null_model,bywt,test="Chisq")[2,]
+chisex=anova(null_model,bysex,test="Chisq")[2,]
+attributes(pup_survival)=attributes(num_pups)
+````
+Of the 244 pups branded and released, `r never_seen` were never seen again and `r seen_as_yearlings` were seen after they reached age 1, so pup survival from the time of release was at least `r sprintf("%.2f",seen_as_yearlings/244)`. Minimum pup survival differs across weight groups (Figure ) ($\chi^2$ = `r sprintf("%.2f",chiwt$Deviance)`, df = `r chiwt$Df`, p = `r sprintf("%.2f",chiwt["Pr(>Chi)"])`) but not for the sexes ($\chi^2$ = `r sprintf("%.2f",chisex$Deviance)`, df = `r chisex$Df`, p = `r sprintf("%.2f",chisex["Pr(>Chi)"])`)).
+
+
+```{r,echo=FALSE,results='hide',fig.height=5,fig.width=6}
+barplot(pup_survival/as.vector(num_pups),beside=TRUE,legend=TRUE,xlab="Weight category",ylab="Minimum survival probability",args.legend=list(x=3,y=.75,horiz=TRUE,bty="n"),ylim=c(0,.9))
+text(1.5,.51,num_pups[1,1])
+text(2.5,.54,num_pups[2,1])
+text(4.5,.71,num_pups[1,2])
+text(5.5,.69,num_pups[2,2])
+text(7.5,.82,num_pups[1,3])
+text(8.5,.68,num_pups[2,3])
+````
+
+```{r,echo=FALSE,results='hide'}
+
+observation_summary=apply(chmat,2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+colnames(observation_summary)=as.character(zc$times[-c(1:2)])
+observation_summary=observation_summary[rowSums(observation_summary)!=0,]
+observation_summary=rbind(observation_summary,colSums(observation_summary))
+observation_summary=cbind(observation_summary,rowSums(observation_summary))
+rownames(observation_summary)[nrow(observation_summary)]="Total"
+colnames(observation_summary)[ncol(observation_summary)]="Total"
+write.table(observation_summary,file="observation_summary.txt")
+
+
+observation_summary=apply(chmat[zcdata$sex=="M",],2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+observation_summary=observation_summary[rowSums(observation_summary)!=0,]
+byobs=rbind(Suckling=colSums(observation_summary[c(1,4),]),Unknown=colSums(observation_summary[c(2,5,7,9),]),Weaned=colSums(observation_summary[c(3,6,8,10),]))
+colnames(byobs)=as.character(zc$times[-c(1:2)])
+male_byobs=byobs
+
+observation_summary=apply(chmat[zcdata$sex=="F",],2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+observation_summary=observation_summary[rowSums(observation_summary)!=0,]
+byobs=rbind(Suckling=colSums(observation_summary[c(1,4),]),Unknown=colSums(observation_summary[c(2,5,7,9),]),Weaned=colSums(observation_summary[c(3,6,8,10),]))
+colnames(byobs)=as.character(zc$times[-c(1:2)])
+female_byobs=byobs
+````
+
+Suckling behavior was seen at least once for `r sprintf("%.2f",100*seen_suckling/(244-never_seen))` % of the `r 244-never_seen` pups resighted at least once. There was a total of `r sum(female_byobs[1,]) + sum(male_byobs[1,])` suckling observations and for occasions 3-8, only `r sprintf("%.2f",100*(sum(female_byobs[1,2:7]) + sum(male_byobs[1,2:7]))/(sum(female_byobs[1:2,2:7]) + sum(male_byobs[1:2,2:7])))` % were classfied as suckling of the `r sum(female_byobs[1:2,2:7]) + sum(male_byobs[1:2,2:7])` observations. With most of the observations classified as unknown, it was essential to cope with it in the model to estimate proportion pups weaned through time. However with the exception of the October sample in which most suckling behavior was errantly ignored in the field, the temporal distribution of the suckling proportion matches the expectation that most pups wean between April and June.
+
+
+```{r,echo=FALSE,results='hide',fig.height=7,fig.width=6}
+par(mfrow=c(2,1))
+barplot(t(t(male_byobs)/colSums(male_byobs)),las=2,cex.names=.9,legend.text=c("Suckling","Unknown","Weaned"),args.legend=list(horiz=TRUE,x=21,y=1.3,bty="n"))
+mtext("Male",side=3,at=1.5, line=1,cex=1.5)
+barplot(t(t(female_byobs)/colSums(female_byobs)),las=2,cex.names=.9)
+mtext("Female",side=3,at=1.8, line=1,cex=1.5)
+
+````
+
+
+```{r,echo=FALSE,results='hide'}
+observation_summary=apply(chmat[zcdata$sex=="M",],2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+colnames(observation_summary)=2:19
+observation_summary=observation_summary[rowSums(observation_summary)!=0,]
+byarea=rbind(Area1=colSums(observation_summary[1:3,]),Area2=colSums(observation_summary[4:6,]),Area3=colSums(observation_summary[7:8,]),Area4=colSums(observation_summary[9:10,]))
+byarea=byarea[,-16]
+colnames(byarea)=as.character(zc$times[-c(1:2,17)])
+male_byarea=byarea
+
+observation_summary=apply(chmat[zcdata$sex=="F",],2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+colnames(observation_summary)=2:19
+observation_summary=observation_summary[rowSums(observation_summary)!=0,]
+byarea=rbind(Area1=colSums(observation_summary[1:3,]),Area2=colSums(observation_summary[4:6,]),Area3=colSums(observation_summary[7:8,]),Area4=colSums(observation_summary[9:10,]))
+byarea=byarea[,-16]
+colnames(byarea)=as.character(zc$times[-c(1:2,17)])
+female_byarea=byarea
+
+
+observation_summary=apply(chmat,2,function(x) table(factor(x,levels= sort(paste(1:4,rep(c("S","W","U"),4),sep="")))))
+observation_summary=observation_summary[,-1]
+colnames(observation_summary)=2:19
+obs_byarea=cbind(Area1=rowSums(observation_summary[1:3,]),Area2=rowSums(observation_summary[4:6,]),Area3=rowSums(observation_summary[7:9,]),Area4=rowSums(observation_summary[10:12,]))
+
+````
+
+Most of the observations were made in Area 1 and it also had the highest proportion of the observations with suckling due to its location and the available observation points. No sucking was observed in areas 3 and 4. Suckling at ANI (area 4) could be observed easily if it occurred but at both areas 2 and 3, the observation sites made it less likely to observe suckling.  Areas 3 and 4 are used primarily by juvenile sea lions. 
+
+```{r,echo=FALSE,results='hide',fig.height=7,fig.width=6}
+barplot(t(t(obs_byarea)/colSums(obs_byarea)),cex.names=.9,legend.text=c("Suckling","Unknown","Weaned"),args.legend=list(horiz=TRUE,x=4,y=1.15,bty="n",cex=.9),ylim=c(0,1.1))
+ text(.7,1.05,sum(obs_byarea[,1]))
+text(1.9,1.05,sum(obs_byarea[,2]))
+text(3.1,1.05,sum(obs_byarea[,3]))
+text(4.3,1.05,sum(obs_byarea[,4]))
+````
+
+Movement - timing and sex difference; movement away from areas 1 and 2 during pupping breeding season
+
+```{r,echo=FALSE,results='hide',fig.height=7,fig.width=6}
+par(mfrow=c(2,1))
+barplot(t(t(male_byarea)/colSums(male_byarea)),las=2,cex.names=.9,legend.text=c("Area 1","Area 2","Area 3","Area 4"),args.legend=list(horiz=TRUE,x=20,y=1.3,bty="n"))
+mtext("Male",side=3,at=1.5, line=1,cex=1.5)
+barplot(t(t(female_byarea)/colSums(female_byarea)),las=2,cex.names=.9)
+mtext("Female",side=3,at=1.8, line=1,cex=1.5)
+````
